@@ -504,8 +504,12 @@ function renderTableRows(data, config) {
                 const td = document.createElement('td');
                 td.className = 'px-4 py-2 whitespace-nowrap';
                 
+                // Special case for user_id in audit_logs
+                if (currentTable === 'audit_logs' && column.name === 'user_id' && record.user_name) {
+                    td.textContent = record.user_name + ' (' + record.user_id + ')';
+                }
                 // Handle different column types
-                if (column.type === 'image' && record[column.name]) {
+                else if (column.type === 'image' && record[column.name]) {
                     td.innerHTML = `<img src="${record[column.name]}" alt="Image" class="h-10 w-10 rounded-full object-cover">`;
                 } else if (column.type === 'datetime' && record[column.name]) {
                     td.textContent = formatDateTime(record[column.name]);
@@ -915,3 +919,391 @@ function formatDate(dateString) {
     }).format(date);
 }
 
+
+// Add these functions to your app.js file
+
+// Add event listeners for export and import buttons
+document.getElementById('export-btn').addEventListener('click', exportData);
+document.getElementById('import-btn').addEventListener('click', showImportModal);
+document.getElementById('import-file').addEventListener('change', handleFileUpload);
+document.getElementById('import-form').addEventListener('submit', handleImport);
+document.getElementById('cancel-import').addEventListener('click', hideImportModal);
+
+// Function to export table data
+async function exportData() {
+    try {
+        // Show loading state
+        const exportBtn = document.getElementById('export-btn');
+        const originalText = exportBtn.innerHTML;
+        exportBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> Exporting...';
+        exportBtn.disabled = true;
+        
+        // Fetch all data for the current table (without pagination)
+        const { data } = await supabaseService.supabase
+            .from(currentTable)
+            .select('*')
+            .order('created_at', { ascending: false });
+        
+        if (!data || data.length === 0) {
+            alert('No data to export');
+            exportBtn.innerHTML = originalText;
+            exportBtn.disabled = false;
+            return;
+        }
+        
+        // Convert data to CSV
+        const csvContent = convertToCSV(data);
+        
+        // Create download link
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', `${currentTable}_export_${formatDateForFilename(new Date())}.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        // Reset button
+        exportBtn.innerHTML = originalText;
+        exportBtn.disabled = false;
+    } catch (error) {
+        console.error('Error exporting data:', error);
+        alert(`Error exporting data: ${error.message}`);
+        document.getElementById('export-btn').innerHTML = '<i class="fas fa-download mr-2"></i> Export';
+        document.getElementById('export-btn').disabled = false;
+    }
+}
+
+// Function to convert data to CSV
+function convertToCSV(data) {
+    if (!data || data.length === 0) return '';
+    
+    const headers = Object.keys(data[0]);
+    const csvRows = [];
+    
+    // Add headers
+    csvRows.push(headers.join(','));
+    
+    // Add rows
+    data.forEach(item => {
+        const values = headers.map(header => {
+            const value = item[header];
+            // Handle null values
+            if (value === null || value === undefined) return '';
+            
+            // Handle objects (like JSON fields)
+            if (typeof value === 'object') return `"${JSON.stringify(value).replace(/"/g, '""')}"`;
+            
+            // Handle strings with commas or quotes
+            if (typeof value === 'string') return `"${value.replace(/"/g, '""')}"`;
+            
+            return value;
+        });
+        csvRows.push(values.join(','));
+    });
+    
+    return csvRows.join('\n');
+}
+
+// Function to format date for filename
+function formatDateForFilename(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    
+    return `${year}${month}${day}_${hours}${minutes}`;
+}
+
+// Function to show import modal
+function showImportModal() {
+    document.getElementById('import-modal').classList.remove('hidden');
+    document.getElementById('import-file').value = '';
+    document.getElementById('import-preview').classList.add('hidden');
+    document.getElementById('import-error').classList.add('hidden');
+    document.getElementById('import-count').textContent = '0';
+}
+
+// Function to hide import modal
+function hideImportModal() {
+    document.getElementById('import-modal').classList.add('hidden');
+}
+
+// Function to handle file upload
+function handleFileUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const importError = document.getElementById('import-error');
+    importError.classList.add('hidden');
+    
+    const reader = new FileReader();
+    
+    reader.onload = function(event) {
+        try {
+            let data;
+            
+            // Parse file based on extension
+            if (file.name.endsWith('.csv')) {
+                data = parseCSV(event.target.result);
+            } else if (file.name.endsWith('.json')) {
+                data = JSON.parse(event.target.result);
+            } else {
+                throw new Error('Unsupported file format. Please upload a CSV or JSON file.');
+            }
+            
+            if (!data || data.length === 0) {
+                throw new Error('No data found in the file.');
+            }
+            
+            // Store the parsed data for later use
+            window.importData = data;
+            
+            // Show preview
+            showImportPreview(data);
+        } catch (error) {
+            console.error('Error parsing file:', error);
+            importError.textContent = `Error parsing file: ${error.message}`;
+            importError.classList.remove('hidden');
+            document.getElementById('import-preview').classList.add('hidden');
+        }
+    };
+    
+    reader.onerror = function() {
+        importError.textContent = 'Error reading file';
+        importError.classList.remove('hidden');
+    };
+    
+    if (file.name.endsWith('.csv')) {
+        reader.readAsText(file);
+    } else {
+        reader.readAsText(file);
+    }
+}
+
+// Function to parse CSV
+function parseCSV(csv) {
+    const lines = csv.split('\n');
+    const result = [];
+    const headers = lines[0].split(',').map(header => 
+        header.trim().replace(/^"(.*)"$/, '$1') // Remove quotes if present
+    );
+    
+    for (let i = 1; i < lines.length; i++) {
+        if (!lines[i].trim()) continue; // Skip empty lines
+        
+        const obj = {};
+        let currentLine = lines[i];
+        
+        // Handle quoted values with commas
+        let inQuote = false;
+        let currentValue = '';
+        let valueIndex = 0;
+        
+        for (let j = 0; j < currentLine.length; j++) {
+            const char = currentLine[j];
+            
+            if (char === '"') {
+                inQuote = !inQuote;
+            } else if (char === ',' && !inQuote) {
+                // End of value
+                obj[headers[valueIndex]] = currentValue.trim().replace(/^"(.*)"$/, '$1');
+                currentValue = '';
+                valueIndex++;
+            } else {
+                currentValue += char;
+            }
+        }
+        
+        // Add the last value
+        if (valueIndex < headers.length) {
+            obj[headers[valueIndex]] = currentValue.trim().replace(/^"(.*)"$/, '$1');
+        }
+        
+        result.push(obj);
+    }
+    
+    return result;
+}
+
+// Function to show import preview
+function showImportPreview(data) {
+    const previewContainer = document.getElementById('import-preview');
+    const previewHeaders = document.getElementById('import-preview-headers');
+    const previewBody = document.getElementById('import-preview-body');
+    const importCount = document.getElementById('import-count');
+    
+    // Clear previous preview
+    previewHeaders.innerHTML = '';
+    previewBody.innerHTML = '';
+    
+    // Get headers from first item
+    const headers = Object.keys(data[0]);
+    
+    // Create header row
+    const headerRow = document.createElement('tr');
+    headers.forEach(header => {
+        const th = document.createElement('th');
+        th.className = 'px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
+        th.textContent = header;
+        headerRow.appendChild(th);
+    });
+    previewHeaders.appendChild(headerRow);
+    
+    // Create preview rows (max 5)
+    const previewData = data.slice(0, 5);
+    previewData.forEach(item => {
+        const row = document.createElement('tr');
+        headers.forEach(header => {
+            const td = document.createElement('td');
+            td.className = 'px-4 py-2 whitespace-nowrap text-sm';
+            
+            // Format value based on type
+            const value = item[header];
+            if (value === null || value === undefined) {
+                td.textContent = '';
+            } else if (typeof value === 'object') {
+                td.innerHTML = `<pre class="text-xs">${JSON.stringify(value, null, 2)}</pre>`;
+            } else {
+                td.textContent = value;
+            }
+            
+            row.appendChild(td);
+        });
+        previewBody.appendChild(row);
+    });
+    
+    // Show preview and update count
+    previewContainer.classList.remove('hidden');
+    importCount.textContent = data.length;
+}
+
+// Function to handle import
+async function handleImport(e) {
+    e.preventDefault();
+    
+    if (!window.importData || window.importData.length === 0) {
+        document.getElementById('import-error').textContent = 'No data to import';
+        document.getElementById('import-error').classList.remove('hidden');
+        return;
+    }
+    
+    try {
+        // Show loading state
+        const importBtn = document.getElementById('confirm-import');
+        const originalText = importBtn.innerHTML;
+        importBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> Importing...';
+        importBtn.disabled = true;
+        
+        // Get table config to check for required fields
+        const config = tableConfigs[currentTable];
+        const requiredFields = config.columns
+            .filter(col => col.required && !col.readonly)
+            .map(col => col.name);
+        
+        // Validate data
+        for (const item of window.importData) {
+            for (const field of requiredFields) {
+                if (!item[field]) {
+                    throw new Error(`Required field "${field}" is missing in some records.`);
+                }
+            }
+        }
+        
+        // Insert data in batches to avoid timeouts
+        const batchSize = 50;
+        let successCount = 0;
+        
+        for (let i = 0; i < window.importData.length; i += batchSize) {
+            const batch = window.importData.slice(i, i + batchSize);
+            
+            // Remove id field if present (to allow auto-generation)
+            batch.forEach(item => {
+                if (item.id && !isEditing) {
+                    delete item.id;
+                }
+                
+                // Convert empty strings to null
+                Object.keys(item).forEach(key => {
+                    if (item[key] === '') {
+                        item[key] = null;
+                    }
+                });
+            });
+            
+            const { error } = await supabaseService.supabase
+                .from(currentTable)
+                .insert(batch);
+            
+            if (error) throw error;
+            
+            successCount += batch.length;
+        }
+        
+        // Success
+        alert(`Successfully imported ${successCount} records.`);
+        hideImportModal();
+        loadTableData(); // Refresh the table
+    } catch (error) {
+        console.error('Error importing data:', error);
+        document.getElementById('import-error').textContent = `Error importing data: ${error.message}`;
+        document.getElementById('import-error').classList.remove('hidden');
+    } finally {
+        // Reset button
+        document.getElementById('confirm-import').innerHTML = 'Import Data';
+        document.getElementById('confirm-import').disabled = false;
+    }
+}
+// Function to export as JSON
+async function exportAsJSON() {
+    try {
+        // Fetch all data for the current table (without pagination)
+        const { data } = await supabaseService.supabase
+            .from(currentTable)
+            .select('*')
+            .order('created_at', { ascending: false });
+        
+        if (!data || data.length === 0) {
+            alert('No data to export');
+            return;
+        }
+        
+        // Create download link
+        const jsonString = JSON.stringify(data, null, 2);
+        const blob = new Blob([jsonString], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', `${currentTable}_export_${formatDateForFilename(new Date())}.json`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    } catch (error) {
+        console.error('Error exporting data as JSON:', error);
+        alert(`Error exporting data: ${error.message}`);
+    }
+}
+
+// Modify the export button to show a dropdown with CSV and JSON options
+function setupExportDropdown() {
+    const exportBtn = document.getElementById('export-btn');
+    
+    exportBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        const dropdown = document.getElementById('export-dropdown');
+        dropdown.classList.toggle('hidden');
+    });
+    
+    // Close dropdown when clicking outside
+    document.addEventListener('click', function() {
+        document.getElementById('export-dropdown').classList.add('hidden');
+    });
+    
+    // Set up export format buttons
+    document.getElementById('export-csv').addEventListener('click', exportData);
+    document.getElementById('export-json').addEventListener('click', exportAsJSON);
+}
