@@ -97,7 +97,7 @@ adminpanel/
 
 1. **Clone the repository**:
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/tarun1sisodia/adminpanel
 cd adminpanel
 ```
 
@@ -112,7 +112,7 @@ npm install
    - Update the Supabase credentials in `supabase.js`:
      ```javascript
      const SUPABASE_URL = 'your-supabase-url';
-     const SUPABASE_ANON_KEY = 'your-supabase-anon-key';
+     const SUPABASE_SERVICE_ROLE_KEY = 'your-supabase-service-role-key';
      ```
 
 4. **Start the application**:
